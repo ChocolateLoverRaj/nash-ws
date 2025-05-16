@@ -1,12 +1,14 @@
 //! tungstenite WebSocket backend.
 
-use crate::prelude::*;
 use crate::error::WebsocketResult;
-use tokio_tungstenite::{connect_async, WebSocketStream, MaybeTlsStream};
-pub use tokio_tungstenite::tungstenite::Error;
-use tokio::net::TcpStream;
+use crate::prelude::*;
 use futures_util::SinkExt;
 use std::sync::{Arc, Mutex};
+use tokio::net::TcpStream;
+use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
+
+/// The underlying error is a tungstenite error, which is very specific
+pub type BackendError = tokio_tungstenite::tungstenite::Error;
 
 use crate::message::Message;
 use futures_util::StreamExt;
@@ -17,17 +19,13 @@ use futures_util::stream::{SplitSink, SplitStream};
 impl From<tokio_tungstenite::tungstenite::Message> for Message {
     fn from(message: tokio_tungstenite::tungstenite::Message) -> Self {
         match message {
-            tokio_tungstenite::tungstenite::Message::Binary(binary) => {
-                Message::Binary(binary)
-            },
-            tokio_tungstenite::tungstenite::Message::Text(text) => {
-                Message::Text(text)
-            },
+            tokio_tungstenite::tungstenite::Message::Binary(binary) => Message::Binary(binary),
+            tokio_tungstenite::tungstenite::Message::Text(text) => Message::Text(text),
             tokio_tungstenite::tungstenite::Message::Close(close) => {
                 let close = close.map(|close| close.reason.to_string());
                 Message::Close(close)
-            },
-            _ => unimplemented!("Some message types aren't implemented yet: {:#?}", message)
+            }
+            _ => unimplemented!("Some message types aren't implemented yet: {:#?}", message),
         }
     }
 }
@@ -41,16 +39,23 @@ pub struct WebSocket {}
 #[derive(Derivative, Clone)]
 #[derivative(Debug)]
 pub struct WebSocketSender {
-    #[derivative(Debug="ignore")]
-    sender: Arc<Mutex<SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, tokio_tungstenite::tungstenite::Message>>>
+    #[derivative(Debug = "ignore")]
+    sender: Arc<
+        Mutex<
+            SplitSink<
+                WebSocketStream<MaybeTlsStream<TcpStream>>,
+                tokio_tungstenite::tungstenite::Message,
+            >,
+        >,
+    >,
 }
 
 /// Stream-based WebSocket receiver.
 #[derive(Derivative)]
 #[derivative(Debug)]
 pub struct WebSocketReceiver {
-    #[derivative(Debug="ignore")]
-    receiver: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>
+    #[derivative(Debug = "ignore")]
+    receiver: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
 }
 
 impl WebSocket {
@@ -74,15 +79,29 @@ impl WebSocketSender {
         match message {
             Message::Text(text) => {
                 let text = text.clone().into();
-                self.sender.lock().expect("Failed to lock sender.").send(text).await.map_err(|error| crate::error::Error::SendError(error))
-            },
+                self.sender
+                    .lock()
+                    .expect("Failed to lock sender.")
+                    .send(text)
+                    .await
+                    .map_err(|error| crate::error::Error::SendError(error))
+            }
             Message::Binary(binary) => {
                 let binary = binary.clone().into();
-                self.sender.lock().expect("Failed to lock sender.").send(binary).await.map_err(|error| crate::error::Error::SendError(error))
-            },
-            Message::Close(_close) => {
-                self.sender.lock().expect("Failed to lock sender.").close().await.map_err(|error| crate::error::Error::SendError(error))
+                self.sender
+                    .lock()
+                    .expect("Failed to lock sender.")
+                    .send(binary)
+                    .await
+                    .map_err(|error| crate::error::Error::SendError(error))
             }
+            Message::Close(_close) => self
+                .sender
+                .lock()
+                .expect("Failed to lock sender.")
+                .close()
+                .await
+                .map_err(|error| crate::error::Error::SendError(error)),
         }
     }
 
@@ -97,12 +116,8 @@ impl WebSocketReceiver {
     pub async fn next(&mut self) -> Option<WebsocketResult<Message>> {
         self.receiver.next().await.map(|result| {
             result
-                .map(|result| {
-                    result.into()
-                })
-                .map_err(|error| {
-                    crate::error::Error::ReceiveError(error)
-                })
+                .map(|result| result.into())
+                .map_err(|error| crate::error::Error::ReceiveError(error))
         })
     }
 }

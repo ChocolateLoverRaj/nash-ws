@@ -2,12 +2,12 @@
 
 use crate::error::WebsocketResult;
 
-use web_sys::{MessageEvent, Event, CloseEvent};
-use wasm_bindgen::{JsValue, JsCast};
-use wasm_bindgen::closure::Closure;
-use js_sys::Function;
-use wasm_bindgen_futures::{JsFuture, spawn_local};
 use crate::Message;
+use js_sys::Function;
+use wasm_bindgen::closure::Closure;
+use wasm_bindgen::{JsCast, JsValue};
+use wasm_bindgen_futures::{spawn_local, JsFuture};
+use web_sys::{CloseEvent, Event, MessageEvent};
 
 impl From<MessageEvent> for Message {
     fn from(event: MessageEvent) -> Self {
@@ -25,7 +25,6 @@ impl From<MessageEvent> for Message {
 #[derive(Debug)]
 pub struct WebSocket {}
 
-
 /// WebSocket sender. Also responsible for closing the connection.
 #[derive(Debug, Clone)]
 pub struct WebSocketSender {
@@ -37,7 +36,7 @@ pub struct WebSocketSender {
 pub struct WebSocketReceiver {
     receiver: async_channel::Receiver<WebsocketResult<Message>>,
     _on_message_callback: Closure<dyn FnMut(MessageEvent)>,
-    _on_close_callback: Closure<dyn FnMut(CloseEvent)>
+    _on_close_callback: Closure<dyn FnMut(CloseEvent)>,
 }
 
 impl WebSocket {
@@ -50,7 +49,10 @@ impl WebSocket {
             // Connection
             let websocket = web_sys::WebSocket::new(url).expect("Couldn't create WebSocket.");
             {
-                let js_value = websocket.clone().dyn_into::<JsValue>().expect("Couldn't cast WebSocket to JsValue.");
+                let js_value = websocket
+                    .clone()
+                    .dyn_into::<JsValue>()
+                    .expect("Couldn't cast WebSocket to JsValue.");
                 let onopen_callback = Closure::wrap(Box::new(move |_event| {
                     accept.call1(&JsValue::NULL, &js_value).ok();
                 }) as Box<dyn FnMut(Event)>);
@@ -67,33 +69,44 @@ impl WebSocket {
         }) as Box<dyn FnMut(Function, Function)>;
         let connection_promise = js_sys::Promise::new(&mut connection_callback);
 
-        JsFuture::from(connection_promise).await.map(move |websocket| {
-            let websocket: web_sys::WebSocket = websocket.dyn_into().expect("Couldn't cast JsValue to WebSocket.");
+        JsFuture::from(connection_promise)
+            .await
+            .map(move |websocket| {
+                let websocket: web_sys::WebSocket = websocket
+                    .dyn_into()
+                    .expect("Couldn't cast JsValue to WebSocket.");
 
-            // Message streaming.
-            let _on_message_callback = {
-                let sender = sender.clone();
-                let _on_message_callback = Closure::wrap(Box::new(move |e: MessageEvent| {
+                // Message streaming.
+                let _on_message_callback = {
                     let sender = sender.clone();
-                    spawn_local(async move {
-                        sender.send(Ok(e.into())).await.ok();
+                    let _on_message_callback = Closure::wrap(Box::new(move |e: MessageEvent| {
+                        let sender = sender.clone();
+                        spawn_local(async move {
+                            sender.send(Ok(e.into())).await.ok();
+                        })
                     })
-                }) as Box<dyn FnMut(MessageEvent)>);
-                websocket.set_onmessage(Some(_on_message_callback.as_ref().unchecked_ref()));
-                _on_message_callback
-            };
-            // Close event.
-            let _on_close_callback = Closure::wrap(Box::new(move |_e: CloseEvent| {
-                sender.close();
-            }) as Box<dyn FnMut(CloseEvent)>);
-            websocket.set_onclose(Some(_on_close_callback.as_ref().unchecked_ref()));
+                        as Box<dyn FnMut(MessageEvent)>);
+                    websocket.set_onmessage(Some(_on_message_callback.as_ref().unchecked_ref()));
+                    _on_message_callback
+                };
+                // Close event.
+                let _on_close_callback = Closure::wrap(Box::new(move |_e: CloseEvent| {
+                    sender.close();
+                })
+                    as Box<dyn FnMut(CloseEvent)>);
+                websocket.set_onclose(Some(_on_close_callback.as_ref().unchecked_ref()));
 
-            websocket.set_binary_type(web_sys::BinaryType::Arraybuffer);
-            (
-                WebSocketSender { websocket },
-                WebSocketReceiver { receiver, _on_message_callback, _on_close_callback }
-            )
-        }).map_err(|error| crate::error::Error::ConnectionError(error))
+                websocket.set_binary_type(web_sys::BinaryType::Arraybuffer);
+                (
+                    WebSocketSender { websocket },
+                    WebSocketReceiver {
+                        receiver,
+                        _on_message_callback,
+                        _on_close_callback,
+                    },
+                )
+            })
+            .map_err(|error| crate::error::Error::ConnectionError(error))
     }
 }
 
@@ -107,25 +120,28 @@ impl WebSocketSender {
     pub async fn send(&mut self, message: &Message) -> WebsocketResult<()> {
         if self.websocket.ready_state() == web_sys::WebSocket::OPEN {
             match message {
-                Message::Text(text) => {
-                    self.websocket.send_with_str(&text)
-                        .map_err(|error| crate::error::Error::SendError(error))
-                },
-                Message::Binary(binary) => {
-                    self.websocket.send_with_u8_array(&binary)
-                        .map_err(|error| crate::error::Error::SendError(error))
-                },
+                Message::Text(text) => self
+                    .websocket
+                    .send_with_str(&text)
+                    .map_err(|error| crate::error::Error::SendError(error)),
+                Message::Binary(binary) => self
+                    .websocket
+                    .send_with_u8_array(&binary)
+                    .map_err(|error| crate::error::Error::SendError(error)),
                 Message::Close(reason) => {
                     const NORMAL: u16 = 1000;
                     if let Some(reason) = reason {
                         self.websocket.close_with_code_and_reason(NORMAL, &reason)
                     } else {
                         self.websocket.close_with_code(NORMAL)
-                    }.map_err(|error| crate::error::Error::SendError(error))
+                    }
+                    .map_err(|error| crate::error::Error::SendError(error))
                 }
             }
         } else {
-            Err(crate::error::Error::SendError("Sending while the socket is not open is not allowed.".into()))
+            Err(crate::error::Error::SendError(
+                "Sending while the socket is not open is not allowed.".into(),
+            ))
         }
     }
 }
@@ -137,4 +153,5 @@ impl WebSocketReceiver {
     }
 }
 
-pub type Error = JsValue;
+/// The underlying error is a JavaScript value
+pub type BackendError = JsValue;
