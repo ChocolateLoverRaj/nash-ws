@@ -3,8 +3,9 @@
 use crate::error::WebsocketResult;
 use crate::prelude::*;
 use futures_util::SinkExt;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tokio::net::TcpStream;
+use tokio::sync::Mutex;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
 /// The underlying error is a tungstenite error, which is very specific
@@ -81,7 +82,7 @@ impl WebSocketSender {
                 let text = text.clone().into();
                 self.sender
                     .lock()
-                    .expect("Failed to lock sender.")
+                    .await
                     .send(text)
                     .await
                     .map_err(|error| crate::error::Error::SendError(error))
@@ -90,7 +91,7 @@ impl WebSocketSender {
                 let binary = binary.clone().into();
                 self.sender
                     .lock()
-                    .expect("Failed to lock sender.")
+                    .await
                     .send(binary)
                     .await
                     .map_err(|error| crate::error::Error::SendError(error))
@@ -98,7 +99,7 @@ impl WebSocketSender {
             Message::Close(_close) => self
                 .sender
                 .lock()
-                .expect("Failed to lock sender.")
+                .await
                 .close()
                 .await
                 .map_err(|error| crate::error::Error::SendError(error)),
